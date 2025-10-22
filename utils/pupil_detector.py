@@ -77,22 +77,52 @@ def _detect_from_gray(gray: np.ndarray) -> Tuple[Optional[Tuple[int, int]], floa
     if not contours:
         return None, 0.0
 
-    contour = max(contours, key=cv2.contourArea)
-    area = cv2.contourArea(contour)
-    if area < 15:
+    best_detection: Optional[Tuple[int, int]] = None
+    best_score = 0.0
+    best_confidence = 0.0
+
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < 20:
+            continue
+
+        (x, y), radius = cv2.minEnclosingCircle(contour)
+        if radius < 3 or radius > 90:
+            continue
+
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter == 0:
+            continue
+
+        circularity = float((4 * np.pi * area) / (perimeter * perimeter))
+        if circularity < 0.35:
+            continue
+
+        mask = np.zeros_like(gray)
+        cv2.drawContours(mask, [contour], -1, 255, -1)
+        mean_intensity = cv2.mean(gray, mask=mask)[0]
+        darkness = 255.0 - mean_intensity
+
+        score = darkness * (circularity ** 2)
+        if score <= best_score:
+            continue
+
+        M = cv2.moments(contour)
+        if M["m00"] == 0:
+            continue
+
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+
+        best_score = score
+        best_detection = (cx, cy)
+        norm_darkness = max(0.0, min(1.0, darkness / 255.0))
+        best_confidence = float(max(0.0, min(1.0, norm_darkness * circularity)))
+
+    if best_detection is None:
         return None, 0.0
 
-    (x, y), radius = cv2.minEnclosingCircle(contour)
-    if radius < 3 or radius > 90:
-        return None, 0.0
-
-    perimeter = cv2.arcLength(contour, True)
-    if perimeter == 0:
-        return None, 0.0
-    circularity = float((4 * np.pi * area) / (perimeter * perimeter))
-    confidence = max(0.0, min(1.0, circularity))
-
-    return (int(x), int(y)), confidence
+    return best_detection, best_confidence
 
 
 def _fallback_threshold(gray: np.ndarray) -> Optional[Tuple[int, int]]:
