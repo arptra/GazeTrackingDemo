@@ -18,6 +18,8 @@ TEXT_COLOR = (230, 230, 230)
 DOT_COLOR = (255, 64, 64)
 START_TRACKING_LABEL = "Запустить отслеживание"
 STOP_TRACKING_LABEL = "Остановить отслеживание"
+PANEL_PADDING = 16
+BUTTON_HEIGHT = 48
 
 
 class Button:
@@ -101,12 +103,7 @@ class CameraInterface:
         self.camera_buttons: List[Button] = []
         self.static_buttons: List[Button] = []
         self.start_button = Button(
-            pygame.Rect(
-                self.button_panel_rect.x,
-                self.button_panel_rect.bottom - 58,
-                self.button_panel_rect.width,
-                48,
-            ),
+            pygame.Rect(0, 0, 0, BUTTON_HEIGHT),
             START_TRACKING_LABEL,
             self.button_font,
             self.on_toggle_tracking,
@@ -115,12 +112,7 @@ class CameraInterface:
         self.start_button.enabled = False
 
         self.algorithm_button = Button(
-            pygame.Rect(
-                self.button_panel_rect.x,
-                self.button_panel_rect.y + 40,
-                self.button_panel_rect.width,
-                48,
-            ),
+            pygame.Rect(0, 0, 0, BUTTON_HEIGHT),
             "Сменить алгоритм",
             self.button_font,
             self.on_cycle_algorithm,
@@ -191,14 +183,8 @@ class CameraInterface:
 
     def _rebuild_camera_buttons(self) -> None:
         self.camera_buttons.clear()
-        panel_y = self.button_panel_rect.y + 110
-        for idx, camera_index in enumerate(self.available_cameras):
-            rect = pygame.Rect(
-                self.button_panel_rect.x,
-                panel_y + idx * 60,
-                self.button_panel_rect.width,
-                48,
-            )
+        for camera_index in self.available_cameras:
+            rect = pygame.Rect(0, 0, 0, BUTTON_HEIGHT)
             button = Button(
                 rect,
                 f"Камера {camera_index}",
@@ -210,43 +196,36 @@ class CameraInterface:
         self.set_selected_camera(self.selected_camera)
 
     def _draw_button_panel(self, surface: pygame.Surface) -> None:
+        self._layout_controls()
         pygame.draw.rect(surface, PANEL_COLOR, self.button_panel_rect, border_radius=12)
         pygame.draw.rect(surface, BORDER_COLOR, self.button_panel_rect, width=2, border_radius=12)
 
         title = self.info_font.render("Доступные камеры", True, TEXT_COLOR)
-        surface.blit(title, (self.button_panel_rect.x, self.button_panel_rect.y + 6))
+        surface.blit(title, self._title_position)
+
+        if self._status_position is not None and self.selected_camera is not None:
+            status_text = self.info_font.render(
+                f"Активная: {self.selected_camera}", True, TEXT_COLOR
+            )
+            surface.blit(status_text, self._status_position)
 
         algo_label = self.info_font.render(
             f"Текущий алгоритм: {self.algorithm_name}", True, TEXT_COLOR
         )
-        surface.blit(
-            algo_label,
-            (self.button_panel_rect.x, self.button_panel_rect.y + 24),
-        )
-
-        if not self.available_cameras:
-            empty_text = self.info_font.render("Камеры не найдены", True, TEXT_COLOR)
-            surface.blit(
-                empty_text,
-                (self.button_panel_rect.x, self.button_panel_rect.y + 120),
-            )
-
-        if self.selected_camera is not None:
-            status_text = self.info_font.render(
-                f"Активная: {self.selected_camera}", True, TEXT_COLOR
-            )
-            surface.blit(
-                status_text,
-                (
-                    self.button_panel_rect.x,
-                    self.button_panel_rect.y + 6 + title.get_height() + 4,
-                ),
-            )
+        surface.blit(algo_label, self._algorithm_label_position)
 
         for button in self.static_buttons:
             button.draw(surface)
-        for button in self.camera_buttons:
-            button.draw(surface)
+
+        if not self.available_cameras:
+            empty_text = self.info_font.render("Камеры не найдены", True, TEXT_COLOR)
+            surface.blit(empty_text, (self._inner_left, self._camera_list_top))
+        else:
+            y = self._camera_list_top
+            for button in self.camera_buttons:
+                button.rect.update(self._inner_left, y, self._inner_width, BUTTON_HEIGHT)
+                button.draw(surface)
+                y += BUTTON_HEIGHT + 12
 
     def _create_frame_surface(self, frame) -> pygame.Surface:
         resized = cv2.resize(frame, (self.camera_rect.width, self.camera_rect.height))
@@ -271,3 +250,31 @@ class CameraInterface:
             self.camera_rect.y + int(pupil_point[1] * scale_y),
         )
         pygame.draw.circle(surface, DOT_COLOR, dot_position, 8)
+
+    def _layout_controls(self) -> None:
+        inner_left = self.button_panel_rect.x + PANEL_PADDING
+        inner_width = self.button_panel_rect.width - 2 * PANEL_PADDING
+        line_height = self.info_font.get_linesize()
+
+        y = self.button_panel_rect.y + PANEL_PADDING
+        self._title_position = (inner_left, y)
+        y += line_height + 6
+
+        if self.selected_camera is not None:
+            self._status_position = (inner_left, y)
+            y += line_height + 12
+        else:
+            self._status_position = None
+
+        self._algorithm_label_position = (inner_left, y)
+        y += line_height + 8
+
+        self.algorithm_button.rect.update(inner_left, y, inner_width, BUTTON_HEIGHT)
+        y = self.algorithm_button.rect.bottom + 24
+
+        self._camera_list_top = y
+        self._inner_left = inner_left
+        self._inner_width = inner_width
+
+        start_y = self.button_panel_rect.bottom - PANEL_PADDING - BUTTON_HEIGHT
+        self.start_button.rect.update(inner_left, start_y, inner_width, BUTTON_HEIGHT)
