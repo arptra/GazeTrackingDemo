@@ -50,6 +50,12 @@ def detect_pupil_with_roi(
         best_detection = full_detection
         best_confidence = full_confidence
 
+    if best_detection is None:
+        fallback_detection = _fallback_threshold(gray)
+        if fallback_detection is not None:
+            best_detection = fallback_detection
+            best_confidence = max(best_confidence, 0.15)
+
     return best_detection, float(best_confidence)
 
 
@@ -73,11 +79,11 @@ def _detect_from_gray(gray: np.ndarray) -> Tuple[Optional[Tuple[int, int]], floa
 
     contour = max(contours, key=cv2.contourArea)
     area = cv2.contourArea(contour)
-    if area < 30:
+    if area < 15:
         return None, 0.0
 
     (x, y), radius = cv2.minEnclosingCircle(contour)
-    if radius < 4 or radius > 80:
+    if radius < 3 or radius > 90:
         return None, 0.0
 
     perimeter = cv2.arcLength(contour, True)
@@ -87,3 +93,18 @@ def _detect_from_gray(gray: np.ndarray) -> Tuple[Optional[Tuple[int, int]], floa
     confidence = max(0.0, min(1.0, circularity))
 
     return (int(x), int(y)), confidence
+
+
+def _fallback_threshold(gray: np.ndarray) -> Optional[Tuple[int, int]]:
+    """Более мягкий бинарный поиск зрачка, близкий к первоначальной версии."""
+
+    _, thresh = cv2.threshold(gray, 40, 255, cv2.THRESH_BINARY_INV)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    contour = max(contours, key=cv2.contourArea)
+    (x, y), radius = cv2.minEnclosingCircle(contour)
+    if radius < 3 or radius > 90:
+        return None
+    return int(x), int(y)
