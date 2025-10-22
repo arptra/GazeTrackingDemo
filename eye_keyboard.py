@@ -6,6 +6,7 @@ import pygame
 
 from devices.cameras import discover_cameras
 from tracking.algorithms.simple import SimplePupilTracker
+from tracking.algorithms.stabilized import StabilizedPupilTracker
 from tracking.registry import TrackingAlgorithmRegistry
 from ui.camera_interface import CameraInterface
 from ui.keyboard import OnScreenKeyboard
@@ -28,6 +29,7 @@ def main() -> None:
     keyboard = OnScreenKeyboard(KEYBOARD_RECT, LETTERS, keyboard_font)
 
     registry = TrackingAlgorithmRegistry()
+    registry.register(StabilizedPupilTracker)
     registry.register(SimplePupilTracker)
     algorithm_names = list(registry.algorithm_names())
     if not algorithm_names:

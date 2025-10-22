@@ -16,21 +16,21 @@ class SimplePupilTracker(GazeTrackingAlgorithm):
     name = "Простой"
 
     def __init__(self, smooth_alpha: float = 0.85) -> None:
-        self._smooth_alpha = smooth_alpha
         self._smoother = ExponentialSmoother(smooth_alpha)
         self._last_detection: Optional[Tuple[int, int]] = None
 
     def reset(self) -> None:
-        self._smoother = ExponentialSmoother(self._smooth_alpha)
+        self._smoother.reset()
         self._last_detection = None
 
     def process_frame(self, frame: np.ndarray) -> Optional[float]:
         detection = detect_pupil(frame)
         self._last_detection = detection
         if detection is None:
-            self._smoother = ExponentialSmoother(self._smooth_alpha)
+            self._smoother.reset()
             return None
         norm_x = detection[0] / frame.shape[1]
+        norm_x = max(0.0, min(1.0, norm_x))
         return self._smoother.update(norm_x)
 
     def last_detection(self) -> Optional[Tuple[int, int]]:
