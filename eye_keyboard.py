@@ -5,6 +5,7 @@ import cv2
 import pygame
 
 from devices.cameras import discover_cameras
+from tracking.algorithms.robust_ir import RobustIRPupilTracker
 from tracking.algorithms.simple import SimplePupilTracker
 from tracking.algorithms.stabilized import StabilizedPupilTracker
 from tracking.registry import TrackingAlgorithmRegistry
@@ -29,6 +30,7 @@ def main() -> None:
     keyboard = OnScreenKeyboard(KEYBOARD_RECT, LETTERS, keyboard_font)
 
     registry = TrackingAlgorithmRegistry()
+    registry.register(RobustIRPupilTracker)
     registry.register(StabilizedPupilTracker)
     registry.register(SimplePupilTracker)
     algorithm_names = list(registry.algorithm_names())
