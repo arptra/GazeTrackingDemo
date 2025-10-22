@@ -15,6 +15,8 @@ class _DetectionResult:
     mask: np.ndarray
     roi_origin: Tuple[int, int]
     clahe: np.ndarray
+    score: float
+    confidence: float
 
 
 class RobustIRPupilTracker(GazeTrackingAlgorithm):
@@ -26,18 +28,28 @@ class RobustIRPupilTracker(GazeTrackingAlgorithm):
         self,
         smooth_alpha: float = 0.9,
         dead_zone_ratio: float = 0.02,
+        direction_buffer_ratio: float = 0.18,
+        max_norm_delta: float = 0.15,
+        min_relative_score: float = 3e-4,
+        buffer_release_frames: int = 6,
         max_missed_frames: int = 12,
         debug: bool = False,
     ) -> None:
         self._alpha = float(smooth_alpha)
         self._dead_zone_ratio = float(dead_zone_ratio)
+        self._direction_buffer_ratio = float(max(0.0, min(direction_buffer_ratio, 0.9)))
+        self._max_norm_delta = float(max_norm_delta)
+        self._min_relative_score = float(max(0.0, min_relative_score))
+        self._buffer_release_frames = max(1, int(buffer_release_frames))
         self._max_missed_frames = int(max_missed_frames)
         self.debug = debug
 
         self._smooth_point: Optional[np.ndarray] = None
         self._last_detection: Optional[Tuple[int, int]] = None
         self._stable_norm: Optional[float] = None
+        self._last_direction: Optional[int] = None
         self._missed_frames = 0
+        self._buffer_frames = 0
 
         self._roi_rect: Optional[Tuple[int, int, int, int]] = None
         self._roi_mask: Optional[np.ndarray] = None
@@ -63,7 +75,9 @@ class RobustIRPupilTracker(GazeTrackingAlgorithm):
         self._smooth_point = None
         self._last_detection = None
         self._stable_norm = None
+        self._last_direction = None
         self._missed_frames = 0
+        self._buffer_frames = 0
 
     def process_frame(self, frame: np.ndarray) -> Optional[float]:
         if frame is None or frame.size == 0:
@@ -77,6 +91,15 @@ class RobustIRPupilTracker(GazeTrackingAlgorithm):
             if self._missed_frames > self._max_missed_frames:
                 self._smooth_point = None
                 self._last_detection = None
+                self._buffer_frames = 0
+            return self._stable_norm
+
+        if detection.confidence < self._min_relative_score:
+            self._missed_frames += 1
+            if self._missed_frames > self._max_missed_frames:
+                self._smooth_point = None
+                self._last_detection = None
+                self._buffer_frames = 0
             return self._stable_norm
 
         self._missed_frames = 0
@@ -88,16 +111,23 @@ class RobustIRPupilTracker(GazeTrackingAlgorithm):
         self._last_detection = (int(round(smoothed_x)), int(round(smoothed_y)))
 
         frame_width = frame.shape[1]
-        norm_x = max(0.0, min(1.0, smoothed_x / max(frame_width, 1)))
+        raw_norm = max(0.0, min(1.0, smoothed_x / max(frame_width, 1)))
+        norm_x = self._apply_directional_buffer(raw_norm)
+        norm_x = self._limit_norm_delta(norm_x)
         self._stable_norm = norm_x
 
         if self.debug:
-            self._show_debug_windows(frame, detection, smooth_point)
+            self._show_debug_windows(frame, detection, smooth_point, raw_norm, norm_x)
 
         return norm_x
 
     def last_detection(self) -> Optional[Tuple[int, int]]:
         return self._last_detection
+
+    def direction_state(self) -> Optional[int]:
+        """Возвращает текущее направление взгляда: -1 влево, 1 вправо, 0 центр или None."""
+
+        return self._last_direction
 
     # --- Частная логика ------------------------------------------------------
     @staticmethod
@@ -116,9 +146,13 @@ class RobustIRPupilTracker(GazeTrackingAlgorithm):
         mask = self._build_binary_mask(clahe)
         mask = self._apply_morphology(mask)
 
-        contour = self._select_contour(mask)
-        if contour is None:
+        selected = self._select_contour(mask)
+        if selected is None:
             return None
+
+        contour, score = selected
+        roi_area = float(mask.shape[0] * mask.shape[1]) + 1e-6
+        confidence = float(score / roi_area)
 
         cx, cy = self._contour_center(contour)
         cx += origin[0]
@@ -128,7 +162,14 @@ class RobustIRPupilTracker(GazeTrackingAlgorithm):
         y0, x0 = origin[1], origin[0]
         full_mask[y0 : y0 + mask.shape[0], x0 : x0 + mask.shape[1]] = mask
 
-        return _DetectionResult(point=(int(round(cx)), int(round(cy))), mask=full_mask, roi_origin=origin, clahe=clahe)
+        return _DetectionResult(
+            point=(int(round(cx)), int(round(cy))),
+            mask=full_mask,
+            roi_origin=origin,
+            clahe=clahe,
+            score=score,
+            confidence=confidence,
+        )
 
     def _extract_roi(self, gray: np.ndarray) -> Tuple[np.ndarray, Tuple[int, int]]:
         h, w = gray.shape[:2]
@@ -197,7 +238,7 @@ class RobustIRPupilTracker(GazeTrackingAlgorithm):
         return cleaned
 
     @staticmethod
-    def _select_contour(mask: np.ndarray) -> Optional[np.ndarray]:
+    def _select_contour(mask: np.ndarray) -> Optional[Tuple[np.ndarray, float]]:
         if mask.size == 0:
             return None
         contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
@@ -230,7 +271,10 @@ class RobustIRPupilTracker(GazeTrackingAlgorithm):
                 best_score = score
                 best_contour = contour
 
-        return best_contour
+        if best_contour is None:
+            return None
+
+        return best_contour, best_score
 
     @staticmethod
     def _contour_center(contour: np.ndarray) -> Tuple[int, int]:
@@ -245,7 +289,7 @@ class RobustIRPupilTracker(GazeTrackingAlgorithm):
     def _apply_smoothing(self, point: np.ndarray, frame_shape) -> np.ndarray:
         frame_height, frame_width = frame_shape[0], frame_shape[1]
         if self._smooth_point is None:
-            self._smooth_point = point
+            self._smooth_point = point.copy()
             return point
 
         smooth = self._smooth_point
@@ -261,13 +305,64 @@ class RobustIRPupilTracker(GazeTrackingAlgorithm):
             smooth[1] = self._alpha * smooth[1] + (1.0 - self._alpha) * point[1]
 
         self._smooth_point = smooth
-        return smooth
+        return smooth.copy()
+
+    def _apply_directional_buffer(self, norm_x: float) -> float:
+        if self._direction_buffer_ratio <= 0.0:
+            return norm_x
+
+        half_buffer = min(0.49, max(0.0, self._direction_buffer_ratio * 0.5))
+        left_boundary = 0.5 - half_buffer
+        right_boundary = 0.5 + half_buffer
+
+        if norm_x < left_boundary:
+            self._last_direction = -1
+            self._buffer_frames = 0
+            if left_boundary > 0.0:
+                return float(np.interp(norm_x, [0.0, left_boundary], [0.0, 0.5 - half_buffer]))
+            return norm_x
+
+        if norm_x > right_boundary:
+            self._last_direction = 1
+            self._buffer_frames = 0
+            if right_boundary < 1.0:
+                return float(np.interp(norm_x, [right_boundary, 1.0], [0.5 + half_buffer, 1.0]))
+            return norm_x
+
+        # Находимся в буферной зоне – удерживаем последнее стабильное направление
+        self._buffer_frames += 1
+        if self._buffer_frames >= self._buffer_release_frames:
+            self._last_direction = 0
+            self._buffer_frames = 0
+            return 0.5
+
+        if self._last_direction is not None and self._stable_norm is not None:
+            return self._stable_norm
+
+        self._last_direction = 0
+        return 0.5
+
+    def _limit_norm_delta(self, new_norm: float) -> float:
+        if self._stable_norm is None:
+            return new_norm
+
+        max_delta = max(0.0, self._max_norm_delta)
+        if max_delta == 0.0:
+            return new_norm
+
+        delta = new_norm - self._stable_norm
+        if abs(delta) <= max_delta:
+            return new_norm
+
+        return self._stable_norm + np.sign(delta) * max_delta
 
     def _show_debug_windows(
         self,
         frame: np.ndarray,
         detection: _DetectionResult,
         smooth_point: np.ndarray,
+        raw_norm: float,
+        filtered_norm: float,
     ) -> None:
         debug_frame = frame.copy()
         cv2.circle(debug_frame, self._last_detection, 6, (0, 255, 0), 2)
@@ -281,6 +376,24 @@ class RobustIRPupilTracker(GazeTrackingAlgorithm):
             1,
             cv2.LINE_AA,
         )
+
+        if self._direction_buffer_ratio > 0:
+            half_buffer = min(0.49, max(0.0, self._direction_buffer_ratio * 0.5))
+            frame_width = frame.shape[1]
+            left_boundary = int(round((0.5 - half_buffer) * frame_width))
+            right_boundary = int(round((0.5 + half_buffer) * frame_width))
+            cv2.line(debug_frame, (left_boundary, 0), (left_boundary, frame.shape[0]), (255, 255, 0), 1)
+            cv2.line(debug_frame, (right_boundary, 0), (right_boundary, frame.shape[0]), (255, 255, 0), 1)
+            cv2.putText(
+                debug_frame,
+                f"raw:{raw_norm:.2f} filt:{filtered_norm:.2f} conf:{detection.confidence:.4f}",
+                (10, 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
 
         mask_vis = detection.mask
         clahe_vis = cv2.normalize(detection.clahe, None, 0, 255, cv2.NORM_MINMAX)
